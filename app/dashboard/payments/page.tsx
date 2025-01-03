@@ -21,33 +21,74 @@ async function getPayments() {
     redirect("/auth/login");
   }
 
-  const { data: payments } = await supabase
+  // Get user role
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", session.user.id)
+    .single();
+
+  // If admin, get all payments, if client, get only their payments
+  const query = supabase
     .from("payments")
     .select(
       `
       *,
-      project:projects(name),
-      user:profiles(full_name, avatar_url)
+      project:projects(name, client_id),
+      payment_method:payment_methods(name),
+      created_by_user:profiles!payments_created_by_fkey(full_name, avatar_url)
     `
     )
     .order("created_at", { ascending: false });
 
-  return payments || [];
+  if (profile?.role === "client") {
+    // For clients, only show payments from their projects
+    query.eq("project.client_id", session.user.id);
+  }
+
+  const { data: payments, error } = await query;
+  if (error) console.error("Error fetching payments:", error);
+
+  return {
+    payments: payments || [],
+    isAdmin: profile?.role === "admin",
+  };
 }
 
 async function getProjects() {
   const supabase = createServerClient();
-  const { data: projects } = await supabase
+
+  // Check auth and role
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) {
+    redirect("/auth/login");
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", session.user.id)
+    .single();
+
+  // If client, only get their active projects
+  const query = supabase
     .from("projects")
     .select("id, name")
-    .eq("status", "active")
+    .eq("status", "ACTIVE")
     .order("name");
 
-  return projects || [];
+  if (profile?.role === "client") {
+    query.eq("client_id", session.user.id);
+  }
+
+  const { data: projects } = await query;
+  return { projects: projects || [], isAdmin: profile?.role === "admin" };
 }
 
 export default async function PaymentsPage() {
-  const [payments, projects] = await Promise.all([
+  const [{ payments, isAdmin }, { projects }] = await Promise.all([
     getPayments(),
     getProjects(),
   ]);
@@ -59,7 +100,7 @@ export default async function PaymentsPage() {
         <NewPaymentDrawer projects={projects}>
           <Button className='bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600'>
             <Plus className='mr-2 h-4 w-4' />
-            New Payment
+            Create Payment
           </Button>
         </NewPaymentDrawer>
       </div>
@@ -75,7 +116,7 @@ export default async function PaymentsPage() {
         </div>
 
         <Suspense fallback={<PaymentsTableSkeleton />}>
-          <PaymentsTable payments={payments} />
+          <PaymentsTable payments={payments} isAdmin={isAdmin} />
         </Suspense>
       </div>
     </div>

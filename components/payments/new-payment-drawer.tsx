@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -32,17 +32,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import {
-  ArrowRight,
-  Loader2,
-  Calendar,
-  ClipboardList,
-  FileText,
-  Wallet2,
-  PlusCircle,
-} from "lucide-react";
+import { Loader2, FileText, Wallet2, PlusCircle, Receipt } from "lucide-react";
 
 const formSchema = z.object({
   project_id: z.string({
@@ -65,15 +56,12 @@ const formSchema = z.object({
     .max(500, {
       message: "Description must not be longer than 500 characters",
     }),
-  due_date: z.string().refine(
-    (value) => {
-      const date = new Date(value);
-      return date > new Date();
-    },
-    {
-      message: "Due date must be in the future",
-    }
-  ),
+  payment_method_id: z.string({
+    required_error: "Please select a payment method",
+  }),
+  reference_number: z.string().min(1, {
+    message: "Reference number is required",
+  }),
 });
 
 interface Project {
@@ -92,6 +80,9 @@ export function NewPaymentDrawer({
 }: NewPaymentDrawerProps) {
   const [open, setOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState<
+    { id: string; name: string }[]
+  >([]);
   const router = useRouter();
   const { toast } = useToast();
   const supabase = createBrowserClient();
@@ -102,6 +93,17 @@ export function NewPaymentDrawer({
       description: "",
     },
   });
+
+  // Fetch payment methods
+  useEffect(() => {
+    const fetchPaymentMethods = async () => {
+      const { data: methods } = await supabase
+        .from("payment_methods")
+        .select("id, name");
+      setPaymentMethods(methods || []);
+    };
+    fetchPaymentMethods();
+  }, []);
 
   async function onSubmit(values: z.infer<typeof formSchema>) {
     try {
@@ -120,9 +122,11 @@ export function NewPaymentDrawer({
         project_id: values.project_id,
         amount: parseFloat(values.amount),
         description: values.description,
-        due_date: values.due_date,
-        status: "pending",
-        user_id: session.user.id,
+        payment_method_id: values.payment_method_id,
+        reference_number: values.reference_number,
+        created_by: session.user.id,
+        status: "PENDING",
+        payment_date: new Date().toISOString(),
       });
 
       if (error) throw error;
@@ -160,7 +164,7 @@ export function NewPaymentDrawer({
                   Create New Payment
                 </DrawerTitle>
                 <DrawerDescription>
-                  Add a new payment for your project
+                  Create a new payment for your project
                 </DrawerDescription>
               </DrawerHeader>
             </div>
@@ -254,22 +258,55 @@ export function NewPaymentDrawer({
 
                     <FormField
                       control={form.control}
-                      name='due_date'
+                      name='payment_method_id'
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel className='flex items-center gap-2'>
-                            <Calendar className='h-4 w-4 text-blue-400' />
-                            Due Date
+                            <Receipt className='h-4 w-4 text-blue-400' />
+                            Payment Method
+                          </FormLabel>
+                          <Select
+                            onValueChange={field.onChange}
+                            defaultValue={field.value}>
+                            <FormControl>
+                              <SelectTrigger className='border-border/40 bg-gradient-to-b from-background/50 to-background/80 backdrop-blur transition-colors hover:bg-accent'>
+                                <SelectValue placeholder='Select a payment method' />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent className='border-border/40 bg-gradient-to-b from-background/95 to-background/80 backdrop-blur'>
+                              {paymentMethods.map((method) => (
+                                <SelectItem key={method.id} value={method.id}>
+                                  {method.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormDescription>
+                            Select the payment method
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='reference_number'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className='flex items-center gap-2'>
+                            <FileText className='h-4 w-4 text-purple-400' />
+                            Reference Number
                           </FormLabel>
                           <FormControl>
                             <Input
-                              type='date'
+                              placeholder='Enter reference number'
                               className='border-border/40 bg-gradient-to-b from-background/50 to-background/80 backdrop-blur transition-colors hover:bg-accent'
                               {...field}
                             />
                           </FormControl>
                           <FormDescription>
-                            When is this payment due?
+                            Enter the payment reference number
                           </FormDescription>
                           <FormMessage />
                         </FormItem>
@@ -282,13 +319,13 @@ export function NewPaymentDrawer({
                       render={({ field }) => (
                         <FormItem className='sm:col-span-2'>
                           <FormLabel className='flex items-center gap-2'>
-                            <ClipboardList className='h-4 w-4 text-purple-400' />
+                            <FileText className='h-4 w-4 text-purple-400' />
                             Description
                           </FormLabel>
                           <FormControl>
-                            <Textarea
+                            <Input
                               placeholder='Payment description...'
-                              className='h-32 resize-none border-border/40 bg-gradient-to-b from-background/50 to-background/80 backdrop-blur transition-colors hover:bg-accent'
+                              className='border-border/40 bg-gradient-to-b from-background/50 to-background/80 backdrop-blur transition-colors hover:bg-accent'
                               {...field}
                             />
                           </FormControl>
@@ -323,7 +360,7 @@ export function NewPaymentDrawer({
                   {isLoading ? (
                     <Loader2 className='mr-2 h-4 w-4 animate-spin' />
                   ) : (
-                    <ArrowRight className='mr-2 h-4 w-4' />
+                    <Receipt className='mr-2 h-4 w-4' />
                   )}
                   Create Payment
                 </Button>

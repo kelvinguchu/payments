@@ -125,8 +125,8 @@ export function NewInvoiceDrawer({
         amount: parseFloat(values.amount),
         description: values.description,
         due_date: values.due_date,
-        status: "draft",
-        user_id: session.user.id,
+        status: "DRAFT",
+        created_by: session.user.id,
         invoice_number: invoiceNumber,
       });
 

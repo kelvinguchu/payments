@@ -1,25 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { createBrowserClient } from "@/lib/supabase/client";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { useEffect, useState } from "react";
 import { useToast } from "@/components/ui/use-toast";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -29,6 +12,24 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -37,28 +38,71 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import {
   FileText,
   MoreHorizontal,
-  Plus,
   Upload,
   Download,
   Trash2,
   FileImage,
   File,
   Receipt,
-  FileContract,
+  ScrollText,
   FileCheck,
   Search,
 } from "lucide-react";
+
+// Create a loading skeleton component
+function DocumentsTableSkeleton() {
+  return (
+    <div className='rounded-md border border-border/40 bg-gradient-to-br from-background/50 via-background/50 to-background/50 backdrop-blur'>
+      <Table>
+        <TableHeader>
+          <TableRow className='border-border/40 hover:bg-transparent'>
+            <TableHead>Name</TableHead>
+            <TableHead>Category</TableHead>
+            <TableHead>Project</TableHead>
+            <TableHead>Size</TableHead>
+            <TableHead>Uploaded</TableHead>
+            <TableHead className='w-[70px]'></TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <TableRow
+              key={index}
+              className='border-border/40 hover:bg-gradient-to-r hover:from-indigo-500/5 hover:to-purple-500/5'>
+              <TableCell className='w-[300px]'>
+                <div className='h-4 w-full animate-pulse rounded bg-border/40'></div>
+              </TableCell>
+              <TableCell>
+                <div className='h-4 w-24 animate-pulse rounded bg-border/40'></div>
+              </TableCell>
+              <TableCell>
+                <div className='h-4 w-32 animate-pulse rounded bg-border/40'></div>
+              </TableCell>
+              <TableCell>
+                <div className='h-4 w-16 animate-pulse rounded bg-border/40'></div>
+              </TableCell>
+              <TableCell>
+                <div className='h-4 w-24 animate-pulse rounded bg-border/40'></div>
+              </TableCell>
+              <TableCell>
+                <div className='h-8 w-8 animate-pulse rounded bg-border/40'></div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+type DocumentCategory =
+  | "payment_receipt"
+  | "contract"
+  | "invoice"
+  | "deliverable"
+  | "other";
 
 interface Document {
   id: string;
@@ -66,134 +110,161 @@ interface Document {
   type: string;
   size: number;
   url: string;
-  category:
-    | "payment_receipt"
-    | "contract"
-    | "invoice"
-    | "deliverable"
-    | "other";
+  category: DocumentCategory;
   project_id: string | null;
   created_at: string;
   user_id: string;
   project?: {
     name: string;
+    client_id: string;
   };
 }
 
 interface Project {
   id: string;
   name: string;
+  client_id: string;
 }
 
 export default function DocumentsPage() {
+  const supabase = createClientComponentClient();
+  const { toast } = useToast();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  const [selectedProject, setSelectedProject] = useState<string>("");
-  const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterCategory, setFilterCategory] = useState<string>("");
-  const [filterProject, setFilterProject] = useState<string>("");
-  const supabase = createBrowserClient();
-  const { toast } = useToast();
+  const [filterCategory, setFilterCategory] = useState<DocumentCategory | "">(
+    ""
+  );
+  const [filterProject, setFilterProject] = useState<string | null>(null);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] =
+    useState<DocumentCategory>("other");
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    fetchDocuments();
-    fetchProjects();
-  }, []);
+    async function initialize() {
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+        if (userError || !user) return;
 
-  async function fetchProjects() {
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session?.session?.user) return;
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .single();
 
-      const { data, error } = await supabase
-        .from("projects")
-        .select("id, name")
-        .order("name");
+        const isUserAdmin = profile?.role === "admin";
+        setIsAdmin(isUserAdmin);
 
-      if (error) throw error;
-      setProjects(data || []);
-    } catch (error) {
-      console.error("Error fetching projects:", error);
+        // Fetch documents with role-based filtering
+        let query = supabase
+          .from("documents")
+          .select("*, project:projects(*)")
+          .order("created_at", { ascending: false });
+
+        if (!isUserAdmin) {
+          // For clients, only show documents from their projects
+          query = query.or(
+            `user_id.eq.${user.id},project->client_id.eq.${user.id}`
+          );
+        }
+
+        const { data: docs, error: docsError } = await query;
+        if (docsError) throw docsError;
+        setDocuments(docs || []);
+
+        // Fetch projects with role-based filtering
+        let projectsQuery = supabase
+          .from("projects")
+          .select("id, name, client_id");
+
+        if (!isUserAdmin) {
+          projectsQuery = projectsQuery.eq("client_id", user.id);
+        }
+
+        const { data: projectsData, error: projectsError } =
+          await projectsQuery;
+        if (projectsError) throw projectsError;
+        setProjects(projectsData || []);
+      } catch (error) {
+        console.error("Error initializing:", error);
+        toast({
+          title: "Error",
+          description: "Failed to load documents. Please refresh the page.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsLoading(false);
+      }
     }
-  }
 
-  async function fetchDocuments() {
+    initialize();
+  }, [supabase, toast]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const file = e.target.files[0];
+    setIsUploading(true);
+
     try {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session?.session?.user) return;
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError || !user) return;
 
-      const { data, error } = await supabase
-        .from("documents")
-        .select(
-          `
-          *,
-          project:projects(name)
-        `
-        )
-        .eq("user_id", session.session.user.id)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      setDocuments(data || []);
-    } catch (error) {
-      console.error("Error fetching documents:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch documents. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    try {
-      const file = event.target.files?.[0];
-      if (!file) return;
-
-      setIsUploading(true);
-      const { data: session } = await supabase.auth.getSession();
-      if (!session?.session?.user) return;
-
-      // Upload file to Supabase Storage
+      // Upload to storage
       const fileExt = file.name.split(".").pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
+      const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const filePath = `${user.id}/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
         .from("documents")
-        .upload(`${session.session.user.id}/${fileName}`, file);
+        .upload(filePath, file);
 
       if (uploadError) throw uploadError;
 
       // Get public URL
-      const { data: urlData } = await supabase.storage
+      const { data: urlData } = supabase.storage
         .from("documents")
-        .getPublicUrl(`${session.session.user.id}/${fileName}`);
+        .getPublicUrl(filePath);
 
-      // Save document metadata to database
+      // Insert into database
       const { error: dbError } = await supabase.from("documents").insert({
         name: file.name,
         type: file.type,
         size: file.size,
         url: urlData.publicUrl,
-        category: selectedCategory || "other",
+        category: selectedCategory,
         project_id: selectedProject || null,
-        user_id: session.session.user.id,
+        user_id: user.id,
       });
 
       if (dbError) throw dbError;
 
+      // Refresh documents
+      const { data: newDoc } = await supabase
+        .from("documents")
+        .select("*, project:projects(*)")
+        .eq("url", urlData.publicUrl)
+        .single();
+
+      if (newDoc) {
+        setDocuments((prev) => [...prev, newDoc]);
+      }
+
       toast({
         title: "Success",
-        description: "Document uploaded successfully.",
+        description: "Document uploaded successfully",
       });
-
       setUploadDialogOpen(false);
-      fetchDocuments();
     } catch (error) {
       console.error("Error uploading document:", error);
       toast({
@@ -204,65 +275,59 @@ export default function DocumentsPage() {
     } finally {
       setIsUploading(false);
     }
-  }
+  };
 
-  async function handleDelete(id: string, url: string) {
+  const handleDelete = async (id: string) => {
     try {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session?.session?.user) return;
+      const doc = documents.find((d) => d.id === id);
+      if (!doc) return;
 
-      // Delete from Storage
-      const filePath = url.split("/").slice(-2).join("/");
-      const { error: storageError } = await supabase.storage
-        .from("documents")
-        .remove([filePath]);
-
-      if (storageError) throw storageError;
+      // Delete from storage
+      const filePath = doc.url.split("/").pop();
+      if (filePath) {
+        await supabase.storage.from("documents").remove([filePath]);
+      }
 
       // Delete from database
-      const { error: dbError } = await supabase
-        .from("documents")
-        .delete()
-        .eq("id", id);
+      const { error } = await supabase.from("documents").delete().eq("id", id);
 
-      if (dbError) throw dbError;
+      if (error) throw error;
 
+      setDocuments((prev) => prev.filter((d) => d.id !== id));
       toast({
         title: "Success",
-        description: "Document deleted successfully.",
+        description: "Document deleted successfully",
       });
-
-      fetchDocuments();
     } catch (error) {
       console.error("Error deleting document:", error);
       toast({
         title: "Error",
-        description: "Failed to delete document. Please try again.",
+        description: "Failed to delete the document. Please try again.",
         variant: "destructive",
       });
     }
-  }
+  };
 
   function formatFileSize(bytes: number) {
     if (bytes === 0) return "0 Bytes";
     const k = 1024;
     const sizes = ["Bytes", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   }
 
-  function getCategoryIcon(category: string) {
+  function getCategoryIcon(category: DocumentCategory) {
     switch (category) {
       case "payment_receipt":
         return <Receipt className='h-4 w-4 text-green-400' />;
       case "contract":
-        return <FileContract className='h-4 w-4 text-purple-400' />;
+        return <ScrollText className='h-4 w-4 text-blue-400' />;
       case "invoice":
-        return <FileText className='h-4 w-4 text-blue-400' />;
+        return <FileText className='h-4 w-4 text-purple-400' />;
       case "deliverable":
         return <FileCheck className='h-4 w-4 text-orange-400' />;
       default:
-        return <File className='h-4 w-4 text-indigo-400' />;
+        return <File className='h-4 w-4 text-gray-400' />;
     }
   }
 
@@ -275,33 +340,48 @@ export default function DocumentsPage() {
     return matchesSearch && matchesCategory && matchesProject;
   });
 
+  const handleDownload = async (doc: Document) => {
+    try {
+      const response = await fetch(doc.url);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = doc.name;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error("Error downloading document:", error);
+      toast({
+        title: "Error",
+        description: "Failed to download the document. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   if (isLoading) {
-    return (
-      <div className='container flex h-[200px] items-center justify-center'>
-        <div className='space-y-4 text-center'>
-          <div className='text-lg font-medium'>Loading documents...</div>
-          <div className='text-sm text-muted-foreground'>
-            Please wait while we fetch your documents
-          </div>
-        </div>
-      </div>
-    );
+    return <DocumentsTableSkeleton />;
   }
 
   return (
-    <div className='container space-y-8 px-4 py-8'>
+    <div className='space-y-4'>
       <div className='flex items-center justify-between'>
         <div>
-          <h1 className='text-3xl font-bold tracking-tight'>Documents</h1>
+          <h2 className='text-2xl font-bold tracking-tight'>Documents</h2>
           <p className='text-muted-foreground'>
-            Upload and manage your project documents
+            {isAdmin
+              ? "Manage and organize your documents"
+              : "View and download project documents"}
           </p>
         </div>
-        <div className='flex items-center gap-4'>
-          <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
+        {isAdmin && (
+          <Dialog>
             <DialogTrigger asChild>
               <Button className='bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg shadow-indigo-500/20 transition-all hover:from-indigo-600 hover:to-purple-600 hover:shadow-indigo-500/30'>
-                <Plus className='mr-2 h-4 w-4' />
+                <Upload className='mr-2 h-4 w-4' />
                 Upload Document
               </Button>
             </DialogTrigger>
@@ -316,13 +396,15 @@ export default function DocumentsPage() {
                 <div className='grid gap-2'>
                   <Label htmlFor='project'>Project (Optional)</Label>
                   <Select
-                    value={selectedProject}
-                    onValueChange={setSelectedProject}>
+                    value={selectedProject || "none"}
+                    onValueChange={(value) =>
+                      setSelectedProject(value === "none" ? null : value)
+                    }>
                     <SelectTrigger>
                       <SelectValue placeholder='Select a project' />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value=''>No Project</SelectItem>
+                      <SelectItem value='none'>No Project</SelectItem>
                       {projects.map((project) => (
                         <SelectItem key={project.id} value={project.id}>
                           {project.name}
@@ -335,9 +417,11 @@ export default function DocumentsPage() {
                   <Label htmlFor='category'>Category</Label>
                   <Select
                     value={selectedCategory}
-                    onValueChange={setSelectedCategory}>
-                    <SelectTrigger>
-                      <SelectValue placeholder='Select a category' />
+                    onValueChange={(value: string) =>
+                      setSelectedCategory(value as DocumentCategory)
+                    }>
+                    <SelectTrigger className='w-[180px]'>
+                      <SelectValue placeholder='Select category' />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value='payment_receipt'>
@@ -362,84 +446,23 @@ export default function DocumentsPage() {
               </div>
             </DialogContent>
           </Dialog>
-        </div>
+        )}
       </div>
 
-      {documents.length === 0 ? (
-        <div className='flex h-[450px] shrink-0 items-center justify-center rounded-md border border-dashed border-border/40'>
-          <div className='mx-auto flex max-w-[420px] flex-col items-center justify-center text-center'>
-            <div className='flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-b from-indigo-500/10 to-purple-500/10'>
-              <FileImage className='h-10 w-10 text-indigo-400' />
-            </div>
-            <h3 className='mt-4 text-lg font-semibold'>No documents</h3>
-            <p className='mb-4 mt-2 text-sm text-muted-foreground'>
-              You haven't uploaded any documents yet. Start by uploading your
-              first document.
+      {!documents.length ? (
+        <div className='flex h-[350px] flex-col items-center justify-center space-y-3 rounded-lg border border-border/40 bg-gradient-to-br from-background/50 via-background/50 to-background/50 backdrop-blur'>
+          <div className='rounded-full bg-gradient-to-b from-indigo-500/10 to-purple-500/10 p-3'>
+            <FileText className='h-6 w-6 text-indigo-400' />
+          </div>
+          <div className='text-center'>
+            <h3 className='text-lg font-medium text-muted-foreground'>
+              No documents found
+            </h3>
+            <p className='text-sm text-muted-foreground'>
+              {isAdmin
+                ? "Upload your first document to get started"
+                : "No documents have been uploaded for your projects yet"}
             </p>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button className='bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg shadow-indigo-500/20 transition-all hover:from-indigo-600 hover:to-purple-600 hover:shadow-indigo-500/30'>
-                  <Plus className='mr-2 h-4 w-4' />
-                  Upload your first document
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Upload Document</DialogTitle>
-                  <DialogDescription>
-                    Choose a file and assign it to a project and category
-                  </DialogDescription>
-                </DialogHeader>
-                <div className='grid gap-4 py-4'>
-                  <div className='grid gap-2'>
-                    <Label htmlFor='project'>Project (Optional)</Label>
-                    <Select
-                      value={selectedProject}
-                      onValueChange={setSelectedProject}>
-                      <SelectTrigger>
-                        <SelectValue placeholder='Select a project' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value=''>No Project</SelectItem>
-                        {projects.map((project) => (
-                          <SelectItem key={project.id} value={project.id}>
-                            {project.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className='grid gap-2'>
-                    <Label htmlFor='category'>Category</Label>
-                    <Select
-                      value={selectedCategory}
-                      onValueChange={setSelectedCategory}>
-                      <SelectTrigger>
-                        <SelectValue placeholder='Select a category' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value='payment_receipt'>
-                          Payment Receipt
-                        </SelectItem>
-                        <SelectItem value='contract'>Contract</SelectItem>
-                        <SelectItem value='invoice'>Invoice</SelectItem>
-                        <SelectItem value='deliverable'>Deliverable</SelectItem>
-                        <SelectItem value='other'>Other</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className='grid gap-2'>
-                    <Label htmlFor='file'>File</Label>
-                    <Input
-                      id='file'
-                      type='file'
-                      onChange={handleFileUpload}
-                      accept='.pdf,.doc,.docx,.txt,.xls,.xlsx,.png,.jpg,.jpeg'
-                    />
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
           </div>
         </div>
       ) : (
@@ -455,7 +478,11 @@ export default function DocumentsPage() {
                   className='pl-9'
                 />
               </div>
-              <Select value={filterCategory} onValueChange={setFilterCategory}>
+              <Select
+                value={filterCategory}
+                onValueChange={(value: string) =>
+                  setFilterCategory(value as DocumentCategory | "")
+                }>
                 <SelectTrigger className='w-[180px]'>
                   <SelectValue placeholder='All Categories' />
                 </SelectTrigger>
@@ -470,12 +497,16 @@ export default function DocumentsPage() {
                   <SelectItem value='other'>Other</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={filterProject} onValueChange={setFilterProject}>
+              <Select
+                value={filterProject || "all"}
+                onValueChange={(value) =>
+                  setFilterProject(value === "all" ? null : value)
+                }>
                 <SelectTrigger className='w-[180px]'>
                   <SelectValue placeholder='All Projects' />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value=''>All Projects</SelectItem>
+                  <SelectItem value='all'>All Projects</SelectItem>
                   {projects.map((project) => (
                     <SelectItem key={project.id} value={project.id}>
                       {project.name}
@@ -501,18 +532,24 @@ export default function DocumentsPage() {
               <TableBody>
                 {filteredDocuments.map((doc) => (
                   <TableRow key={doc.id}>
-                    <TableCell className='font-medium'>
+                    <TableCell className='font-medium'>{doc.name}</TableCell>
+                    <TableCell>
                       <div className='flex items-center gap-2'>
                         {getCategoryIcon(doc.category)}
-                        {doc.name}
+                        <span className='text-muted-foreground'>
+                          {doc.category
+                            .replace("_", " ")
+                            .replace(/\b\w/g, (l) => l.toUpperCase())}
+                        </span>
                       </div>
                     </TableCell>
-                    <TableCell className='capitalize'>
-                      {doc.category.replace("_", " ")}
+                    <TableCell className='text-muted-foreground'>
+                      {doc.project?.name || "No Project"}
                     </TableCell>
-                    <TableCell>{doc.project?.name || "—"}</TableCell>
-                    <TableCell>{formatFileSize(doc.size)}</TableCell>
-                    <TableCell>
+                    <TableCell className='text-muted-foreground'>
+                      {formatFileSize(doc.size)}
+                    </TableCell>
+                    <TableCell className='text-muted-foreground'>
                       {new Date(doc.created_at).toLocaleDateString()}
                     </TableCell>
                     <TableCell>
@@ -520,27 +557,32 @@ export default function DocumentsPage() {
                         <DropdownMenuTrigger asChild>
                           <Button
                             variant='ghost'
-                            size='icon'
-                            className='hover:bg-background/80'>
+                            className='h-8 w-8 p-0 hover:bg-gradient-to-r hover:from-indigo-500/10 hover:to-purple-500/10'>
                             <MoreHorizontal className='h-4 w-4' />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent
                           align='end'
-                          className='w-[160px] bg-gradient-to-b from-background/95 to-background/80 backdrop-blur'>
-                          <DropdownMenuItem
-                            onClick={() => window.open(doc.url, "_blank")}
-                            className='cursor-pointer'>
-                            <Download className='mr-2 h-4 w-4' />
+                          className='w-[160px] bg-gradient-to-b from-background/95 to-background/98 backdrop-blur'>
+                          <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleDownload(doc)}>
                             Download
                           </DropdownMenuItem>
-                          <DropdownMenuSeparator />
                           <DropdownMenuItem
-                            onClick={() => handleDelete(doc.id, doc.url)}
-                            className='cursor-pointer text-destructive focus:text-destructive'>
-                            <Trash2 className='mr-2 h-4 w-4' />
-                            Delete
+                            onClick={() => window.open(doc.url, "_blank")}>
+                            View
                           </DropdownMenuItem>
+                          {isAdmin && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className='text-red-400'
+                                onClick={() => handleDelete(doc.id)}>
+                                Delete
+                              </DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
